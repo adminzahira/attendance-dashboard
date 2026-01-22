@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
 <title>Daily Attendance Dashboard</title>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -19,13 +18,15 @@ h1{
   text-align:center;
   font-size:22px;
 }
+.controls{
+  text-align:center;
+  margin-bottom:10px;
+}
 select{
   padding:10px;
   font-size:16px;
   width:100%;
-  max-width:320px;
-  margin:10px auto;
-  display:block;
+  max-width:300px;
 }
 .table-wrap{
   overflow-x:auto;
@@ -34,7 +35,6 @@ table{
   width:100%;
   min-width:520px;
   border-collapse:collapse;
-  margin-bottom:20px;
 }
 th,td{
   border:1px solid #333;
@@ -55,17 +55,14 @@ th{
   color:#900;
   font-weight:bold;
 }
-.alert{
-  background:#fff3cd;
-  padding:10px;
-  border-left:6px solid #ffc107;
-  margin-bottom:10px;
-  font-size:14px;
-}
-.footer{
+.note{
   text-align:center;
-  font-size:12px;
+  font-size:13px;
+  margin:8px;
   color:#555;
+}
+canvas{
+  max-width:100%;
 }
 </style>
 </head>
@@ -74,148 +71,103 @@ th{
 
 <h1>📋 Daily Attendance Dashboard</h1>
 
-<select id="dateFilter"></select>
+<div class="controls">
+  <select id="dateSelect"></select>
+</div>
 
-<div id="output"></div>
+<div class="note">🔄 Auto updates every 60 seconds</div>
 
-<div class="footer">🔄 Auto updates every 60 seconds</div>
+<div id="tables"></div>
+
+<canvas id="chart"></canvas>
 
 <script>
-/* YOUR VERIFIED GOOGLE SHEET JSON URL */
-const SHEET_URL =
-"https://spreadsheets.google.com/feeds/list/1Xl26B96aKzcZT9SnrhR5H9CNjVt9uAEYPm8fjJAr0m4/780160508/public/values?alt=json";
+const SHEET_CSV =
+"https://docs.google.com/spreadsheets/d/1Xl26B96aKzcZT9SnrhR5H9CNjVt9uAEYPm8fjJAr0m4/export?format=csv&gid=780160508";
 
-/* ALL CLASSES IN ORDER */
-const CLASSES = [
- "6A","6B","6C",
- "7A","7B","7C",
- "8A","8B","8C",
- "9A","9B","9C",
- "10A","10B","10C",
- "11A","11B","11C"
-];
+let chart;
 
-const REFRESH_TIME = 60000; // 60 seconds
-let chartInstance = null;
-
-function loadData(){
-fetch(SHEET_URL)
-.then(res => res.json())
-.then(json => {
-  const rows = json.feed.entry.map(e => ({
-    date: e.gsx$date.$t,
-    grade: e.gsx$grade.$t,
-    boys: Number(e.gsx$noofboys.$t) || 0,
-    girls: Number(e.gsx$noofgirls.$t) || 0
-  }));
-
-  const byDate = {};
-  rows.forEach(r => {
-    if(!byDate[r.date]) byDate[r.date] = {};
-    byDate[r.date][r.grade] = r; // latest entry wins
-  });
-
-  const dates = Object.keys(byDate).sort();
-  const filter = document.getElementById("dateFilter");
-
-  filter.innerHTML = "";
-  dates.forEach(d => filter.innerHTML += `<option value="${d}">${d}</option>`);
-
-  filter.onchange = () => render(byDate, filter.value);
-  render(byDate, dates[dates.length - 1]);
-});
+function parseCSV(text){
+  return text.trim().split("\n").map(r =>
+    r.split(",").map(c => c.replace(/^"|"$/g,""))
+  );
 }
 
-function render(byDate, date){
-  const data = byDate[date];
-  let html = "";
-  let missing = false;
+async function loadData(){
+  const res = await fetch(SHEET_CSV);
+  const text = await res.text();
+  const rows = parseCSV(text);
+  const headers = rows.shift();
 
-  let totalBoys = 0, totalGirls = 0, totalStudents = 0;
-  let labels = [], boysArr = [], girlsArr = [];
-
-  CLASSES.forEach(cls => {
-    labels.push(cls);
-    if(data[cls]){
-      boysArr.push(data[cls].boys);
-      girlsArr.push(data[cls].girls);
-      totalBoys += data[cls].boys;
-      totalGirls += data[cls].girls;
-      totalStudents += data[cls].boys + data[cls].girls;
-    }else{
-      boysArr.push(0);
-      girlsArr.push(0);
-      missing = true;
-    }
+  const data = {};
+  rows.forEach(r=>{
+    const obj = {};
+    headers.forEach((h,i)=>obj[h]=r[i]);
+    const d = obj["Date"];
+    const cls = obj["Grade"];
+    if(!data[d]) data[d]={};
+    data[d][cls]=obj; // latest overwrite
   });
 
-  if(missing){
-    html += `<div class="alert">⚠ Some classes have not submitted attendance</div>`;
-  }
+  buildUI(data);
+}
 
-  html += `<div class="table-wrap"><table>
-  <tr>
-    <th>Grade</th>
-    <th>No of Boys</th>
-    <th>No of Girls</th>
-    <th>Total</th>
-  </tr>`;
+function buildUI(data){
+  const dates = Object.keys(data).sort().reverse();
+  const select = document.getElementById("dateSelect");
+  select.innerHTML="";
+  dates.forEach(d=>{
+    const o=document.createElement("option");
+    o.value=d;o.text=d;
+    select.appendChild(o);
+  });
+  select.onchange=()=>renderDate(data,select.value);
+  renderDate(data,dates[0]);
+}
 
-  CLASSES.forEach(cls => {
-    if(data[cls]){
-      const t = data[cls].boys + data[cls].girls;
-      html += `<tr>
-        <td>${cls}</td>
-        <td>${data[cls].boys}</td>
-        <td>${data[cls].girls}</td>
-        <td>${t}</td>
-      </tr>`;
-    }else{
-      html += `<tr class="missing">
-        <td>${cls}</td>
-        <td>X</td>
-        <td>X</td>
-        <td>X</td>
-      </tr>`;
-    }
+function renderDate(data,date){
+  const classes = Object.keys(data[date]).sort((a,b)=>{
+    const g1=parseInt(a), g2=parseInt(b);
+    return g1===g2 ? a.localeCompare(b) : g1-g2;
   });
 
-  html += `<tr class="total-row">
-    <td>Total</td>
-    <td>${totalBoys}</td>
-    <td>${totalGirls}</td>
-    <td>${totalStudents}</td>
-  </tr>
-  </table></div>
+  let html=`<div class="table-wrap"><table>
+  <tr><th>Grade</th><th>Boys</th><th>Girls</th><th>Total</th></tr>`;
 
-  <canvas id="chart"></canvas>`;
+  let tb=0,tg=0,tt=0;
+  const labels=[], totals=[];
 
-  document.getElementById("output").innerHTML = html;
+  classes.forEach(c=>{
+    const r=data[date][c];
+    const b=+r["No of Boys"]||0;
+    const g=+r["No of Girls"]||0;
+    const t=b+g;
+    tb+=b;tg+=g;tt+=t;
+    labels.push(c);totals.push(t);
+    html+=`<tr>
+      <td>${c}</td>
+      <td>${b||"<span class='missing'>X</span>"}</td>
+      <td>${g||"<span class='missing'>X</span>"}</td>
+      <td>${t||"<span class='missing'>X</span>"}</td>
+    </tr>`;
+  });
 
-  if(chartInstance) chartInstance.destroy();
+  html+=`<tr class="total-row">
+    <td>Total</td><td>${tb}</td><td>${tg}</td><td>${tt}</td>
+  </tr></table></div>`;
 
-  chartInstance = new Chart(document.getElementById("chart"), {
-    type: "bar",
-    data: {
-      labels: labels,
-      datasets: [
-        { label: "Boys", data: boysArr },
-        { label: "Girls", data: girlsArr }
-      ]
-    },
-    options: {
-      responsive: true,
-      scales: {
-        x: { stacked: true },
-        y: { stacked: true }
-      }
-    }
+  document.getElementById("tables").innerHTML=html;
+
+  if(chart) chart.destroy();
+  chart=new Chart(document.getElementById("chart"),{
+    type:"bar",
+    data:{labels,datasets:[{label:"Total Students",data:totals}]},
+    options:{responsive:true}
   });
 }
 
-/* INITIAL LOAD + AUTO REFRESH */
 loadData();
-setInterval(loadData, REFRESH_TIME);
+setInterval(loadData,60000);
 </script>
 
 </body>
